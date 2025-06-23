@@ -40,9 +40,9 @@ def main():
     LABEL = str(int(time.time() * 10))
     BATCH_SIZE = 128  # the number of transitions sampled from the replay buffer
     GAMMA = 0.99  # the discount factor
-    EPS_START = 1.0  # the starting epsilon greedy parameter
+    EPS_START = 0.9  # the starting epsilon greedy parameter
     EPS_END = 0.01  # the ending epsilon greedy parameter
-    EPS_DECAY = 0.99  # controls the rate of exponential decay of epsilon, higher means slower decay
+    EPS_DECAY = 0.9995  # controls the rate of exponential decay of epsilon, higher means slower decay
     TAU = 0.005  # the update rate of the target network
     LR = 3e-4  # the learning rate of the AdamW optimizer
 
@@ -56,13 +56,13 @@ def main():
     n_observations = len(state)  # type: ignore
 
     egreedy = EpsilonGreedyPolicy(
-        device=device, lower=EPS_START, upper=EPS_END, decay_rate=EPS_DECAY
+        device=device, lower=EPS_END, upper=EPS_START, decay_rate=EPS_DECAY
     )
-    behavior_net = DQN(n_actions, n_observations).to(device)
+    policy_net = DQN(n_actions, n_observations).to(device)
     target_net = DQN(n_actions, n_observations).to(device)
-    target_net.load_state_dict(behavior_net.state_dict())
+    target_net.load_state_dict(policy_net.state_dict())
 
-    optimizer = optim.AdamW(behavior_net.parameters(), lr=LR, amsgrad=True)
+    optimizer = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
     memory = ReplayBuffer(10000)
 
     num_episodes: int = 600
@@ -78,7 +78,7 @@ def main():
         tau=TAU,
         env=env,
         target=target_net,
-        behavior=behavior_net,
+        policy=policy_net,
         egreedy=egreedy,
         replay_buffer=memory,
         optimizer=optimizer,
@@ -94,7 +94,7 @@ def main():
     print("Complete")
 
     # Save policy
-    save_dict = {"model_state_dict": target_net.state_dict()}
+    save_dict = {"model_state_dict": policy_net.state_dict()}
     torch.save(save_dict, "policy.pth")
 
     if not PLOT:
@@ -107,13 +107,13 @@ def main():
         state, _ = env.reset()
         episode_reward = 0
 
-        while True:
+        for i in count():
             state_t = preprocess_state(
                 state, n_observations, device, torch.float, environment=ENVIRONMNET
             )
 
             with torch.no_grad():
-                action_probs = target_net(state_t)
+                action_probs = policy_net(state_t)
                 action = torch.argmax(action_probs).item()
 
             # Take action in environment
@@ -125,13 +125,13 @@ def main():
             # time.sleep(0.02)
 
             if terminated or truncated:
-                episode_reward = reward
+                episode_reward = i
                 break
 
         rewards.append(episode_reward)
 
     print(rewards)
-    print(sum(rewards))
+    print(sum(rewards) / len(rewards))
     visualize_episodes(
         os.path.join(LABEL, "target_rewards.png"), rewards, torch.float, fig_num=3
     )
@@ -147,7 +147,7 @@ def main():
             )
 
             with torch.no_grad():
-                action_probs = target_net(state_t)
+                action_probs = policy_net(state_t)
                 action = torch.argmax(action_probs).item()
 
             # Take action in environment

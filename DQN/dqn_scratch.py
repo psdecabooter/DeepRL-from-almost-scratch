@@ -32,18 +32,18 @@ class DQN(nn.Module):
 
         # Architecture of the CNN
         self.arch: nn.Sequential = nn.Sequential(
-            nn.Linear(observation_size, 32),
+            nn.Linear(observation_size, 64),
             nn.ReLU(),
-            nn.Linear(32, 32),
+            nn.Linear(64, 32),
             nn.ReLU(),
             nn.Linear(32, input_size),
         )
 
-        # HE initialization
-        for layer in [self.arch]:
-            for module in layer:
-                if isinstance(module, nn.Linear):
-                    nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
+        # # HE initialization
+        # for layer in [self.arch]:
+        #     for module in layer:
+        #         if isinstance(module, nn.Linear):
+        #             nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
 
     def forward(self, x):
         return self.arch(x)
@@ -99,6 +99,7 @@ class EpsilonGreedyPolicy(object):
         environment: Envs = Envs.ICELAKE,
     ):
         threshold = max(self.E_LOWER, self.E_UPPER * (self.E_DECAY**episode))
+        print(threshold)
 
         if random.random() <= threshold:
             return torch.tensor(
@@ -132,6 +133,7 @@ def preprocess_state(
 def batch_learn(
     gamma: float,
     target: nn.Module,
+    policy: nn.Module,
     experiences: list[Experience],
     optimizer: optim.AdamW,
     device,
@@ -155,7 +157,7 @@ def batch_learn(
     # print("RT: ", rt_batch.shape)
     # exit()
     # Calculate state action values
-    state_action_values = target(st_batch).gather(1, at_batch)
+    state_action_values = policy(st_batch).gather(1, at_batch)
 
     # Create a filter for non-terminal states
     non_terminal_mask = torch.tensor(
@@ -208,7 +210,7 @@ def batch_learn(
     optimizer.zero_grad()
     loss.backward()
     # Clip the gradient
-    nn.utils.clip_grad_value_(target.parameters(), 100)
+    nn.utils.clip_grad_value_(policy.parameters(), 100)
     optimizer.step()
     # exit()
 
@@ -221,7 +223,7 @@ def perform_DQN_episodes(
     tau: float,
     env: gym.Env,
     target: nn.Module,
-    behavior: nn.Module,
+    policy: nn.Module,
     egreedy: EpsilonGreedyPolicy,
     replay_buffer: ReplayBuffer,
     optimizer: optim.AdamW,
@@ -231,6 +233,7 @@ def perform_DQN_episodes(
     label: str = "",
     environment: Envs = Envs.ICELAKE,
 ):
+    total_steps = 0
     rewards = []
     divergence = [] if plot else None
     for e in range(episodes):
@@ -240,19 +243,24 @@ def perform_DQN_episodes(
         )
         # Repeat until a terminal state is reached
         for t in count():
-            # Take an action according to the epsilon greedy behavior policy
+            total_steps += 1
+            # Take an action according to the epsilon greedy policy policy
             action: torch.Tensor = egreedy.choose_action(
-                e, state, device, env, behavior, dtype, environment=environment
+                e if environment == Envs.ICELAKE else total_steps,
+                state,
+                device,
+                env,
+                policy,
+                dtype,
+                environment=environment,
             )
             observation, reward, terminated, truncated, _ = env.step(action.item())
-            # if not terminated and reward == 0:
-            #     reward = -0.1
 
             # Create tensors out of the current environment
-            reward = torch.tensor([reward], dtype=dtype, device=device)
+            reward = torch.tensor([reward], device=device)
             next_state = (
                 None
-                if observation is None
+                if terminated
                 else preprocess_state(
                     observation, state_size, device, dtype, environment=environment
                 )
@@ -266,6 +274,7 @@ def perform_DQN_episodes(
                 batch_learn(
                     gamma,
                     target,
+                    policy,
                     replay_buffer.sample(batch_size),
                     optimizer,
                     device,
@@ -275,9 +284,9 @@ def perform_DQN_episodes(
 
             # Soft update
             target_state_dict = target.state_dict()
-            behavior_state_dict = behavior.state_dict()
-            for key in behavior_state_dict:
-                target_state_dict[key] = behavior_state_dict[
+            policy_state_dict = policy.state_dict()
+            for key in policy_state_dict:
+                target_state_dict[key] = policy_state_dict[
                     key
                 ] * tau + target_state_dict[key] * (1 - tau)
             target.load_state_dict(target_state_dict)
@@ -306,7 +315,7 @@ def perform_DQN_episodes(
         visualize_episodes(
             os.path.join(label, "divergence.png"), divergence, dtype, fig_num=2
         )
-        visualize_episodes(os.path.join(label, "behavior_rewards.png"), rewards, dtype)
+        visualize_episodes(os.path.join(label, "training_rewards.png"), rewards, dtype)
 
 
 def visualize_episodes(

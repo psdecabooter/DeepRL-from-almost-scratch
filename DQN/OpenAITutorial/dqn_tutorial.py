@@ -87,6 +87,7 @@ def select_action(state):
     eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(
         -1.0 * steps_done / EPS_DECAY
     )
+    print(eps_threshold)
     steps_done += 1
     if sample > eps_threshold:
         with torch.no_grad():
@@ -153,10 +154,10 @@ def optimize_model():
     action_batch = torch.cat(batch.action)
     reward_batch = torch.cat(batch.reward)
 
-    print(batch)
-    print("A ", action_batch.shape)
-    print("S ", state_batch.shape)
-    exit()
+    # print(batch)
+    # print("A ", action_batch.shape)
+    # print("S ", state_batch.shape)
+    # exit()
     # compute Q(s_t, a), then select the columns of actions taken
     state_action_values = policy_net(state_batch).gather(1, action_batch)
 
@@ -242,5 +243,3 @@ save_policy(
 plot_durations(show_result=True)
 plt.ioff()
 plt.show()
-
-

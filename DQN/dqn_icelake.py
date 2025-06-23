@@ -53,13 +53,13 @@ def main():
     n_observations = env.observation_space.n  # type: ignore
 
     egreedy = EpsilonGreedyPolicy(
-        device=device, lower=EPS_START, upper=EPS_END, decay_rate=EPS_DECAY
+        device=device, lower=EPS_END, upper=EPS_START, decay_rate=EPS_DECAY
     )
-    behavior_net = DQN(n_actions, n_observations).to(device)
+    policy_net = DQN(n_actions, n_observations).to(device)
     target_net = DQN(n_actions, n_observations).to(device)
-    target_net.load_state_dict(behavior_net.state_dict())
+    target_net.load_state_dict(policy_net.state_dict())
 
-    optimizer = optim.AdamW(behavior_net.parameters(), lr=LR, amsgrad=True)
+    optimizer = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
     memory = ReplayBuffer(100000)
 
     num_episodes: int = 3000
@@ -75,7 +75,7 @@ def main():
         tau=TAU,
         env=env,
         target=target_net,
-        behavior=behavior_net,
+        policy=policy_net,
         egreedy=egreedy,
         replay_buffer=memory,
         optimizer=optimizer,
@@ -90,7 +90,7 @@ def main():
     print("Complete")
 
     # Save policy
-    save_dict = {"model_state_dict": target_net.state_dict()}
+    save_dict = {"model_state_dict": policy_net.state_dict()}
     torch.save(save_dict, "policy.pth")
 
     if not PLOT:
@@ -107,7 +107,7 @@ def main():
             state_t = preprocess_state(state, n_observations, device, torch.float)
 
             with torch.no_grad():
-                action_probs = target_net(state_t)
+                action_probs = policy_net(state_t)
                 action = torch.argmax(action_probs).item()
 
             # Take action in environment
@@ -129,6 +129,29 @@ def main():
     visualize_episodes(
         os.path.join(LABEL, "target_rewards.png"), rewards, torch.float, fig_num=3
     )
+
+    env = gym.make("FrozenLake-v1", render_mode="human")
+    while True:
+        terminated = False
+        state, _ = env.reset()
+
+        while True:
+            state_t = preprocess_state(state, n_observations, device, torch.float)
+
+            with torch.no_grad():
+                action_probs = policy_net(state_t)
+                action = torch.argmax(action_probs).item()
+
+            # Take action in environment
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            state = next_state
+
+            # Render and add delay for visualization
+            # env.render()
+            # time.sleep(0.02)
+
+            if terminated or truncated:
+                break
 
 
 if __name__ == "__main__":
