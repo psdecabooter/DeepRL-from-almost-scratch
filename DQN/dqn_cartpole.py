@@ -9,6 +9,7 @@ import torch.optim as optim
 
 from dqn_scratch import (
     DQN,
+    Envs,
     EpsilonGreedyPolicy,
     ReplayBuffer,
     perform_DQN_episodes,
@@ -22,7 +23,7 @@ def main():
     fig, axes = plt.subplots()
 
     # env = gym.make("FrozenLake-v1", render_mode="human")
-    env = gym.make("FrozenLake-v1")
+    env = gym.make("CartPole-v1")
 
     # if GPU is to be used
     device = torch.device(
@@ -34,15 +35,16 @@ def main():
     )
 
     # HYPER PARAMETERS
+    ENVIRONMNET = Envs.CARTPOLE
     PLOT = True
     LABEL = str(int(time.time() * 10))
-    BATCH_SIZE = 32  # the number of transitions sampled from the replay buffer
-    GAMMA = 0.95  # the discount factor
+    BATCH_SIZE = 128  # the number of transitions sampled from the replay buffer
+    GAMMA = 0.99  # the discount factor
     EPS_START = 1.0  # the starting epsilon greedy parameter
     EPS_END = 0.01  # the ending epsilon greedy parameter
-    EPS_DECAY = 0.999  # controls the rate of exponential decay of epsilon, higher means slower decay
-    TAU = 0.01  # the update rate of the target network
-    LR = 1e-3  # the learning rate of the AdamW optimizer
+    EPS_DECAY = 0.99  # controls the rate of exponential decay of epsilon, higher means slower decay
+    TAU = 0.005  # the update rate of the target network
+    LR = 3e-4  # the learning rate of the AdamW optimizer
 
     # If the label directory doesn't exist and plt is active, make it
     if PLOT and not os.path.exists(LABEL):
@@ -50,7 +52,8 @@ def main():
 
     n_actions = env.action_space.n  # type: ignore
     # get the number of state observations
-    n_observations = env.observation_space.n  # type: ignore
+    state, _ = env.reset()
+    n_observations = len(state)  # type: ignore
 
     egreedy = EpsilonGreedyPolicy(
         device=device, lower=EPS_START, upper=EPS_END, decay_rate=EPS_DECAY
@@ -60,9 +63,9 @@ def main():
     target_net.load_state_dict(behavior_net.state_dict())
 
     optimizer = optim.AdamW(behavior_net.parameters(), lr=LR, amsgrad=True)
-    memory = ReplayBuffer(100000)
+    memory = ReplayBuffer(10000)
 
-    num_episodes: int = 3000
+    num_episodes: int = 600
     if torch.cuda.is_available() or torch.backends.mps.is_available():
         num_episodes = 10000
 
@@ -83,6 +86,7 @@ def main():
         plot=PLOT,
         dtype=torch.float,
         label=LABEL,
+        environment=ENVIRONMNET,
     )
     plt.ioff()
     env.close()
@@ -104,7 +108,9 @@ def main():
         episode_reward = 0
 
         while True:
-            state_t = preprocess_state(state, n_observations, device, torch.float)
+            state_t = preprocess_state(
+                state, n_observations, device, torch.float, environment=ENVIRONMNET
+            )
 
             with torch.no_grad():
                 action_probs = target_net(state_t)
@@ -129,6 +135,31 @@ def main():
     visualize_episodes(
         os.path.join(LABEL, "target_rewards.png"), rewards, torch.float, fig_num=3
     )
+
+    env = gym.make("CartPole-v1", render_mode="human")
+    while True:
+        terminated = False
+        state, _ = env.reset()
+
+        while True:
+            state_t = preprocess_state(
+                state, n_observations, device, torch.float, environment=ENVIRONMNET
+            )
+
+            with torch.no_grad():
+                action_probs = target_net(state_t)
+                action = torch.argmax(action_probs).item()
+
+            # Take action in environment
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            state = next_state
+
+            # Render and add delay for visualization
+            # env.render()
+            # time.sleep(0.02)
+
+            if terminated or truncated:
+                break
 
 
 if __name__ == "__main__":

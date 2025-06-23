@@ -1,3 +1,4 @@
+import enum
 import os
 import time
 import gymnasium as gym
@@ -16,6 +17,11 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 
+class Envs(enum.Enum):
+    ICELAKE = 0
+    CARTPOLE = 1
+
+
 class DQN(nn.Module):
     """
     Network architecture for Deep Q-Learning
@@ -27,10 +33,10 @@ class DQN(nn.Module):
         # Architecture of the CNN
         self.arch: nn.Sequential = nn.Sequential(
             nn.Linear(observation_size, 32),
-            nn.ReLU(inplace=True),
-            nn.Linear(32, 16),
-            nn.ReLU(inplace=True),
-            nn.Linear(16, input_size),
+            nn.ReLU(),
+            nn.Linear(32, 32),
+            nn.ReLU(),
+            nn.Linear(32, input_size),
         )
 
         # HE initialization
@@ -90,26 +96,37 @@ class EpsilonGreedyPolicy(object):
         env: gym.Env,
         network: nn.Module,
         dtype: torch.dtype,
+        environment: Envs = Envs.ICELAKE,
     ):
         threshold = max(self.E_LOWER, self.E_UPPER * (self.E_DECAY**episode))
 
         if random.random() <= threshold:
             return torch.tensor(
-                [[env.action_space.sample()]], dtype=dtype, device=device
+                [[env.action_space.sample()]], dtype=torch.long, device=device
             )
 
         with torch.no_grad():
             # Get the action with the largest expected reward
             e_values = network(state)
-            return torch.argmax(e_values).view(1, 1)
+            if environment == Envs.ICELAKE:
+                return torch.argmax(e_values).view(1, 1)
+            if environment == Envs.CARTPOLE:
+                return torch.max(e_values, 1).indices.view(1, 1)
 
 
 def preprocess_state(
-    state: int, num_states: int, device: torch.device, dtype: torch.dtype
+    state,
+    num_states: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    environment: Envs = Envs.ICELAKE,
 ):
-    state_t = torch.zeros(num_states, dtype=dtype, device=device)
-    state_t[state] = 1
-    return state_t
+    if environment == Envs.ICELAKE:
+        state_t = torch.zeros(num_states, dtype=dtype, device=device)
+        state_t[state] = 1
+        return state_t
+    if environment == Envs.CARTPOLE:
+        return torch.tensor(state, dtype=dtype, device=device).unsqueeze(0)
 
 
 def batch_learn(
@@ -119,12 +136,17 @@ def batch_learn(
     optimizer: optim.AdamW,
     device,
     divergence: list | None = None,
+    environment: Envs = Envs.ICELAKE,
 ):
     # Transpose the batch
     batch = Experience(*zip(*experiences))
     # print(batch)
     # Turn the parameters into tensor batches
-    st_batch = torch.stack(batch.st)
+    st_batch = torch.tensor([])
+    if environment == Envs.ICELAKE:
+        st_batch = torch.stack(batch.st)
+    if environment == Envs.CARTPOLE:
+        st_batch = torch.cat(batch.st)
     at_batch = torch.cat(batch.at).long()
     rt_batch = torch.cat(batch.rt)
 
@@ -141,7 +163,10 @@ def batch_learn(
     )
     # print("Nt_mask: ", non_terminal_mask.shape)
     # Create a tensor which only includes non_terminal next states
-    non_terminal_next = torch.stack([st1 for st1 in batch.st1 if st1 is not None])
+    if environment == Envs.CARTPOLE:
+        non_terminal_next = torch.cat([st1 for st1 in batch.st1 if st1 is not None])
+    else:
+        non_terminal_next = torch.stack([st1 for st1 in batch.st1 if st1 is not None])
     # print("Nt_next: ", non_terminal_next.shape)
 
     # Apply the filter to separate states which need their expected value calculated
@@ -163,7 +188,14 @@ def batch_learn(
     # print("t_vals", target_values.shape)
     # print(target_values)
 
-    # Track
+    # Track divergence if given a divergence list
+    if divergence is not None:
+        diff = target_values - state_action_values
+        mse = torch.mean(diff**2).item()
+        abs_diff = torch.mean(torch.abs(diff)).item()
+        max_diff = torch.max(torch.abs(diff)).item()
+        # divergence.append((mse, abs_diff, max_diff))
+        divergence.append(mse)
 
     # Compute loss
     criterion = nn.SmoothL1Loss()
@@ -176,7 +208,7 @@ def batch_learn(
     optimizer.zero_grad()
     loss.backward()
     # Clip the gradient
-    nn.utils.clip_grad_value_(target.parameters(), 3)
+    nn.utils.clip_grad_value_(target.parameters(), 100)
     optimizer.step()
     # exit()
 
@@ -197,25 +229,33 @@ def perform_DQN_episodes(
     dtype: torch.dtype,
     plot: bool = False,
     label: str = "",
+    environment: Envs = Envs.ICELAKE,
 ):
     rewards = []
+    divergence = [] if plot else None
     for e in range(episodes):
         state, info = env.reset()
-        state = preprocess_state(state, state_size, device, dtype)
+        state = preprocess_state(
+            state, state_size, device, dtype, environment=environment
+        )
         # Repeat until a terminal state is reached
         for t in count():
             # Take an action according to the epsilon greedy behavior policy
             action: torch.Tensor = egreedy.choose_action(
-                e, state, device, env, behavior, dtype
+                e, state, device, env, behavior, dtype, environment=environment
             )
             observation, reward, terminated, truncated, _ = env.step(action.item())
+            # if not terminated and reward == 0:
+            #     reward = -0.1
 
             # Create tensors out of the current environment
             reward = torch.tensor([reward], dtype=dtype, device=device)
             next_state = (
                 None
                 if observation is None
-                else preprocess_state(observation, state_size, device, dtype)
+                else preprocess_state(
+                    observation, state_size, device, dtype, environment=environment
+                )
             )
 
             # Add the experience to the replay buffer
@@ -224,7 +264,13 @@ def perform_DQN_episodes(
             # use batch learning if the replay buffer is large enough
             if len(replay_buffer) > batch_size:
                 batch_learn(
-                    gamma, target, replay_buffer.sample(batch_size), optimizer, device
+                    gamma,
+                    target,
+                    replay_buffer.sample(batch_size),
+                    optimizer,
+                    device,
+                    divergence=divergence,
+                    environment=environment,
                 )
 
             # Soft update
@@ -245,20 +291,28 @@ def perform_DQN_episodes(
                 # f"{'truncated' if truncated else ''} {'terminated' if terminated else ''}"
                 # )
                 # Add reward to rewards
-                rewards.append(reward)
+                if environment == Envs.CARTPOLE:
+                    rewards.append(t)
+                else:
+                    rewards.append(reward)
                 break
 
         # If a plot was given, visualize all episodes every 10 episodes
         if plot and e % 10 == 9:
-            visualize_episodes(False, rewards, dtype, fig_num=1)
+            visualize_episodes(None, rewards, dtype, fig_num=1)
 
     # If a plot was given, visualize all rewards
     if plot:
-        visualize_episodes(True, rewards, dtype)
-        plt.savefig(os.path.join(label, "behavior_rewards.png"))
+        visualize_episodes(
+            os.path.join(label, "divergence.png"), divergence, dtype, fig_num=2
+        )
+        visualize_episodes(os.path.join(label, "behavior_rewards.png"), rewards, dtype)
 
 
-def visualize_episodes(show: bool, rewards, dtype: torch.dtype, fig_num: int = 1):
+def visualize_episodes(
+    label: str | None, rewards, dtype: torch.dtype, fig_num: int = 1
+):
+    show = label is not None
     plt.figure(fig_num)
     rewards_t = torch.tensor(rewards, dtype=dtype)
     plt.clf()
@@ -281,3 +335,6 @@ def visualize_episodes(show: bool, rewards, dtype: torch.dtype, fig_num: int = 1
 
     if plt.isinteractive():
         plt.pause(0.001)
+
+    if show:
+        plt.savefig(label)
