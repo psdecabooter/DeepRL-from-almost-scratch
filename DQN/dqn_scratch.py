@@ -99,7 +99,7 @@ class EpsilonGreedyPolicy(object):
         environment: Envs = Envs.ICELAKE,
     ):
         threshold = max(self.E_LOWER, self.E_UPPER * (self.E_DECAY**episode))
-        print(threshold)
+        # print(threshold)
 
         if random.random() <= threshold:
             return torch.tensor(
