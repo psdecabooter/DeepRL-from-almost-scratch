@@ -14,11 +14,11 @@ from a2c import A2C_algorithm
 
 
 def main():
-    NUM_ENVS = 4
+    NUM_ENVS = 12
     env = gym.make_vec("CartPole-v1", NUM_ENVS, vectorization_mode="sync")
     # env = gym.make("CartPole-v1")
     obs, _ = env.reset()
-    observation_size = env.observation_space.shape[0]  # type: ignore
+    observation_size = env.single_observation_space.shape[0]  # type: ignore
     action_size = env.single_action_space.n  # type: ignore
     print(action_size)
     print(observation_size)
@@ -36,8 +36,8 @@ def main():
     GAMMA = 0.99  # Controls reward decay
     LEARNING_RATE = 0.0004  # Learning rate of AdamW Optimizer
     VALUE_COEFFICIENT = 0.5  # policy_loss + VAL_COEF * value_loss
-    CLIP_NORM = 0.5  # Parameter clipping
-    BETA = 0.1  # Controls how important entropy is
+    CLIP_NORM = 0.1  # Parameter clipping
+    BETA = 0.05  # Controls how important entropy is
     ROLLOUT_LENGTH = 20  # Length of rollouts
     ROLLOUTS = 5000  # Number of episodes
     NETSIZE = 64
@@ -51,7 +51,7 @@ def main():
     )
     # A2C client
     a2c = A2C_algorithm(
-        num_environments=4,
+        num_environments=NUM_ENVS,
         shared_network=shared_network,
         env=env,
         device=device,
@@ -77,11 +77,11 @@ def main():
     plt.ion()
     a2c.train(ROLLOUTS)
     plt.ioff()
-    a2c.multi_visualize("Episode Length", a2c.episode_lengths, 1)
-    a2c.multi_visualize("Combination Loss", a2c.comb_losses, 2)
-    a2c.multi_visualize("Policy Loss", a2c.policy_losses, 3)
-    a2c.multi_visualize("Value Loss", a2c.value_losses, 4)
-    a2c.multi_visualize("Entropy Loss", a2c.entropy_losses, 5)
+    # a2c.multi_visualize("Episode Length", a2c.episode_lengths, 1)
+    # a2c.multi_visualize("Combination Loss", a2c.comb_losses, 2)
+    # a2c.multi_visualize("Policy Loss", a2c.policy_losses, 3)
+    # a2c.multi_visualize("Value Loss", a2c.value_losses, 4)
+    # a2c.multi_visualize("Entropy Loss", a2c.entropy_losses, 5)
 
     env = gym.make("CartPole-v1")
     rewards = []

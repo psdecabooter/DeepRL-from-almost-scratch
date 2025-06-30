@@ -61,6 +61,7 @@ class Experience(NamedTuple):
     action: torch.Tensor
     log_probability: torch.Tensor
     reward: torch.Tensor
+    value: torch.Tensor
 
 
 class ENVS(Enum):
@@ -127,12 +128,16 @@ class A2C_algorithm:
         return torch.tensor(state, device=self.device)
 
     def choose_actions(self, state: torch.Tensor):
-        with torch.no_grad():
-            action_prob, _ = self.network(state)
+        action_prob, values = self.network(state)
         distributions = Categorical(probs=action_prob)
         actions = distributions.sample()
 
-        return (actions, distributions.log_prob(actions), distributions.entropy())
+        return (
+            actions,
+            distributions.log_prob(actions),
+            distributions.entropy(),
+            values,
+        )
 
     def multiagent_loss(
         self,
@@ -153,17 +158,30 @@ class A2C_algorithm:
             states_t = torch.stack([exp.state for exp in agent_experiences[i]]).to(
                 device=self.device
             )
-            _, state_values = self.network(states_t)
+            # action_probs, state_values = self.network(states_t)
+            # action_dist = Categorical(probs=action_probs)
+            state_values = torch.stack([exp.value for exp in agent_experiences[i]]).to(
+                device=self.device
+            )
             advantages_t = real_rewards_t - state_values
 
             # Calculate Value loss
             value_loss = torch.pow(advantages_t, 2).mean() * self.VALUE_COEF
 
             # Calculate Policy Loss
-            log_probs = torch.tensor(
-                [exp.log_probability for exp in agent_experiences[i]],
-                device=self.device,
-            ).unsqueeze(1)
+            # actions_t = action_dist.sample()
+            # log_probs = action_dist.log_prob(actions_t)
+            # print("st", states_t.shape)
+            # print("ap", action_probs.shape)
+            # print("a", actions_t)
+            # print("lp", log_probs)
+            # exit()
+
+            log_probs = (
+                torch.stack([exp.log_probability for exp in agent_experiences[i]])
+                .to(device=self.device)
+                .unsqueeze(1)
+            )
             policy_loss = (-log_probs * advantages_t.detach()).mean()
 
             # Calculate Entropy loss
@@ -196,7 +214,8 @@ class A2C_algorithm:
 
         # Run Rollout
         for t in range(self.TMAX):
-            actions, log_probs, entropies = self.choose_actions(states)
+            # print(states)
+            actions, log_probs, entropies, values = self.choose_actions(states)
             total_entropies += entropies
 
             # Take actions
@@ -209,7 +228,9 @@ class A2C_algorithm:
                 if early_term[i]:
                     continue
                 experiences[i].append(
-                    Experience(states[i], actions[i], log_probs[i], rewards[i])
+                    Experience(
+                        states[i], actions[i], log_probs[i], rewards[i], values[i]
+                    )
                 )
 
             early_term = [
@@ -237,8 +258,8 @@ class A2C_algorithm:
         )
         self.optimizer.zero_grad()
         losses.backward()
-        if self.env_type == ENVS.cartpole:
-            nn.utils.clip_grad_norm_(self.network.parameters(), self.CLIP_NORM)
+        # if self.env_type == ENVS.cartpole:
+        nn.utils.clip_grad_norm_(self.network.parameters(), self.CLIP_NORM)
         self.optimizer.step()
 
         return [None if early_term[i] else state for i, state in enumerate(states)]
