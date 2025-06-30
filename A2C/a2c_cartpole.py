@@ -14,10 +14,14 @@ from a2c import A2C_algorithm
 
 
 def main():
-    env = gym.make("CartPole-v1")
+    NUM_ENVS = 4
+    env = gym.make_vec("CartPole-v1", NUM_ENVS, vectorization_mode="sync")
+    # env = gym.make("CartPole-v1")
     obs, _ = env.reset()
-    observation_size = len(obs)
-    action_size = env.action_space.n  # type: ignore
+    observation_size = env.observation_space.shape[0]  # type: ignore
+    action_size = env.single_action_space.n  # type: ignore
+    print(action_size)
+    print(observation_size)
 
     # if GPU is to be used
     device = torch.device(
@@ -32,11 +36,11 @@ def main():
     GAMMA = 0.99  # Controls reward decay
     LEARNING_RATE = 0.0004  # Learning rate of AdamW Optimizer
     VALUE_COEFFICIENT = 0.5  # policy_loss + VAL_COEF * value_loss
-    CLIP_NORM = 0.1  # Parameter clipping
-    BETA = 0.09  # Controls how important entropy is
-    ROLLOUT_LENGTH = 40  # Length of rollouts
+    CLIP_NORM = 0.5  # Parameter clipping
+    BETA = 0.1  # Controls how important entropy is
+    ROLLOUT_LENGTH = 20  # Length of rollouts
     ROLLOUTS = 5000  # Number of episodes
-    NETSIZE = 128
+    NETSIZE = 64
 
     # Shared network which the a2c will use
     shared_network = nn.Sequential(
@@ -47,6 +51,7 @@ def main():
     )
     # A2C client
     a2c = A2C_algorithm(
+        num_environments=4,
         shared_network=shared_network,
         env=env,
         device=device,
@@ -69,13 +74,16 @@ def main():
     # if torch.cuda.is_available():
     #     torch.cuda.manual_seed(seed)
 
+    plt.ion()
     a2c.train(ROLLOUTS)
-    a2c.visualize("Episode Length", a2c.episode_lengths, 1)
-    a2c.visualize("Combination Loss", a2c.comb_losses, 2)
-    a2c.visualize("Policy Loss", a2c.policy_losses, 3)
-    a2c.visualize("Value Loss", a2c.value_losses, 4)
-    a2c.visualize("Entropy Loss", a2c.entropy_losses, 5)
+    plt.ioff()
+    a2c.multi_visualize("Episode Length", a2c.episode_lengths, 1)
+    a2c.multi_visualize("Combination Loss", a2c.comb_losses, 2)
+    a2c.multi_visualize("Policy Loss", a2c.policy_losses, 3)
+    a2c.multi_visualize("Value Loss", a2c.value_losses, 4)
+    a2c.multi_visualize("Entropy Loss", a2c.entropy_losses, 5)
 
+    env = gym.make("CartPole-v1")
     rewards = []
     for i in range(500):
         terminated = False
@@ -84,10 +92,12 @@ def main():
 
         for i in count():
             state_t = a2c.preprocess_state(state)
+            # print("s: ", state_t.shape)
 
             with torch.no_grad():
                 action_probs, expected_value = a2c.network(state_t)
                 action = torch.argmax(action_probs).item()
+            # print(action_probs.shape)
 
             # Take action in environment
             next_state, reward, terminated, truncated, _ = env.step(action)

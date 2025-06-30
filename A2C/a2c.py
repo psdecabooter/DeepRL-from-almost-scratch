@@ -2,16 +2,19 @@ from collections import deque
 from enum import Enum
 import math
 from queue import Queue
+import random
 from typing import NamedTuple
 import gymnasium as gym
 from matplotlib import pyplot as plt
-from numpy import dtype
 from sympy import Transpose
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
 from torch.distributions import Categorical
+
 
 class A2C(nn.Module):
     def __init__(
@@ -40,6 +43,7 @@ class A2C(nn.Module):
         """
         # Shared parameters for the policy and value network
         state = self.main(state)
+        # print(state.shape)
         # (policy network, value network)
         return F.softmax(self.policy(state), dim=-1), self.value(state)
 
@@ -67,8 +71,9 @@ class ENVS(Enum):
 class A2C_algorithm:
     def __init__(
         self,
+        num_environments: int,
         shared_network: nn.Module,
-        env: gym.Env,
+        env: gym.vector.VectorEnv,
         device: torch.device,
         n_act: int,
         beta: float,
@@ -79,9 +84,10 @@ class A2C_algorithm:
         clip_norm: float,
         network_size: int,
         environment_type: ENVS = ENVS.cartpole,
-        preprocess_fn = None
+        preprocess_fn=None,
     ):
         # Hyperparameters
+        self.NENVS = num_environments
         self.CLIP_NORM = clip_norm
         self.VALUE_COEF = value_coef
         self.BETA = beta
@@ -89,181 +95,219 @@ class A2C_algorithm:
         self.TMAX = tmax
         self.device = device
 
-        self.environment = env
+        self.vec_env = env
         self.network: A2C = A2C(n_act, network_size, shared_network)
         self.optimizer = optim.AdamW(self.network.parameters(), lr=learning_rate)
+        if environment_type == ENVS.pong:
+            self.optimizer = optim.RMSprop(
+                self.network.parameters(), lr=learning_rate, alpha=0.99, eps=1e-5
+            )
 
-        self.episode_steps = 0
-        self.episode_lengths: list[int] = []
-        self.comb_losses = []
-        self.policy_losses = []
-        self.value_losses = []
-        self.entropy_losses = []
+        self.mean_comb_loss = []
+        self.episode_steps = [0] * num_environments
+        self.episode_lengths: list[list[int]] = [[] for _ in range(num_environments)]
+        self.final_rewards = [[] for _ in range(num_environments)]
+        self.comb_losses = [[] for _ in range(num_environments)]
+        self.policy_losses = [[] for _ in range(num_environments)]
+        self.value_losses = [[] for _ in range(num_environments)]
+        self.entropy_losses = [[] for _ in range(num_environments)]
         self.env_type = environment_type
         self.preprocess_fn = preprocess_fn
 
     def preprocess_state(self, state) -> torch.Tensor:
         if self.env_type == ENVS.pong:
-            frame = self.preprocess_fn(state) if self.preprocess_fn is not None else exit(1)
-            return torch.tensor(frame, dtype=torch.uint8, device=self.device)
+            frames: np.ndarray = (
+                self.preprocess_fn(state) if self.preprocess_fn is not None else exit(1)
+            )
+            # Convert to float then normalize the uint8
+            frames_t = torch.tensor(frames, dtype=torch.float, device=self.device)
+            frames_t = frames_t / 255.0
+            return frames_t
 
         return torch.tensor(state, device=self.device)
 
-    def choose_action(self, state: torch.Tensor):
-        action_probabilities, _ = self.network(state)
-        # Choose an action from the distribution
-        prob_distribution = Categorical(probs=action_probabilities)
-        action = prob_distribution.sample()
-
-        return (
-            action.unsqueeze(0),
-            prob_distribution.log_prob(action),
-            prob_distribution.entropy().mean(),
-        )
-
-    def calculate_loss(
-        self,
-        final_reward: torch.Tensor,
-        experiences: list[Experience],
-        total_entropy: torch.Tensor,
-    ) -> torch.Tensor:
-        # Transpose the experiences
-        # print(len(experiences))
-        # Move backward through the experiences to calculate discounted rewards
-        rewards = []
-        discounted_rewards = final_reward
-        for experience in experiences.__reversed__():
-            # Accumulate rewards
-            discounted_rewards = experience.reward + self.GAMMA * discounted_rewards
-            rewards.insert(0, discounted_rewards)
-        rewards_t = torch.stack(rewards).to(self.device)
-        # print(rewards_t)
-
-        states_t = torch.stack([exp.state for exp in experiences]).to(self.device)
-        # print("states: ", states_t.shape)
-        _, expected_values = self.network(states_t)
-        # print("expctV: ", expected_values)
-
-        # Advantage is the difference between the expected and real reward
-        advantage: torch.Tensor = rewards_t - expected_values
-        # print("adv: ", advantage)
-
-        # Convert log probabilities to tensor
-        log_probabilities = (
-            torch.stack([exp.log_probability for exp in experiences])
-            .to(self.device)
-            .unsqueeze(-1)
-        )
-        # print("lp: ", log_probabilities.shape)
-        # print(log_probabilities)
-
-        # Calculate Value Loss using mean squared error of the advantage
-        # want the gradient wrt value parameters
-        criterion = nn.MSELoss()
-        value_loss: torch.Tensor = criterion(expected_values, rewards_t)
-
-        # Calculate policy loss using the expected value of the product of the log probabilities
-        # of the actions taken and the advantage
-        # Only want the gradient wrt policy parameters
-        policy_loss = (-log_probabilities * advantage.detach()).mean()
-        # print("ploss: ", policy_loss)
-        # print(policy_loss)
-
-        # Combined loss plus entropy
-        mean_entropy = total_entropy / len(experiences)
-        # print("ment: ", mean_entropy)
-        comb_loss = (
-            policy_loss + self.VALUE_COEF * value_loss - self.BETA * mean_entropy
-        )
-        self.comb_losses.append(comb_loss.item())
-        self.value_losses.append(self.VALUE_COEF * value_loss.item())
-        self.policy_losses.append(policy_loss.item())
-        self.entropy_losses.append(-self.BETA * mean_entropy.item())
-        # print("vloss: ", value_loss)
-        # print("closs: ", comb_loss)
-        # exit()
-        return comb_loss
-
-    def train_nstep_rollout(self, initial_state: torch.Tensor) -> torch.Tensor | None:
-        state: torch.Tensor = initial_state
-
-        early_terminate: bool = False
-
-        experiences: list[Experience] = []
-        total_entropy: torch.Tensor = torch.tensor(
-            0, dtype=torch.float, device=self.device
-        )
-        for t in range(self.TMAX):
-            self.episode_steps += 1
-            action, log_prob, entropy = self.choose_action(state)
-            # print("Act: ", action.shape)
-            # print(action)
-            # print("e: ", entropy)
-            total_entropy += entropy
-
-            observation, reward, terminated, truncated, _ = self.environment.step(
-                action.item()
-            )
-
-            reward = torch.tensor(reward, device=self.device)
-
-            if terminated or truncated:
-                early_terminate = True
-                experiences.append(Experience(state, action, log_prob, reward))
-                break
-            else:
-                next_state = self.preprocess_state(observation)
-                experiences.append(Experience(state, action, log_prob, reward))
-                state = next_state
-
-        # Initialize total rewards to the value of the current state
+    def choose_actions(self, state: torch.Tensor):
         with torch.no_grad():
-            _, final_value = self.network(state)
-        # If it early terminated, there are no future rewards
-        if early_terminate:
-            final_value = torch.zeros_like(final_value, device=self.device)
-        else:
-            final_value.detach()
+            action_prob, _ = self.network(state)
+        distributions = Categorical(probs=action_prob)
+        actions = distributions.sample()
 
-        # Calculate n-step loss
-        loss = self.calculate_loss(final_value, experiences, total_entropy)
-        # print("loss: ", loss.shape)
-        # print(loss)
+        return (actions, distributions.log_prob(actions), distributions.entropy())
 
-        # Backpropagate loss
+    def multiagent_loss(
+        self,
+        final_rewards: torch.Tensor,
+        agent_experiences: list[list[Experience]],
+        total_entropies: torch.Tensor,
+    ) -> torch.Tensor:
+        losses = []
+        # Calculate losses for each agent
+        for i in range(self.NENVS):
+            real_rewards = []
+            discounted_rewards = final_rewards[i]
+            for experience in agent_experiences[i].__reversed__():
+                discounted_rewards = experience.reward + self.GAMMA * discounted_rewards
+                real_rewards.insert(0, discounted_rewards)
+            real_rewards_t = torch.tensor(real_rewards, device=self.device).unsqueeze(1)
+
+            states_t = torch.stack([exp.state for exp in agent_experiences[i]]).to(
+                device=self.device
+            )
+            _, state_values = self.network(states_t)
+            advantages_t = real_rewards_t - state_values
+
+            # Calculate Value loss
+            value_loss = torch.pow(advantages_t, 2).mean() * self.VALUE_COEF
+
+            # Calculate Policy Loss
+            log_probs = torch.tensor(
+                [exp.log_probability for exp in agent_experiences[i]],
+                device=self.device,
+            ).unsqueeze(1)
+            policy_loss = (-log_probs * advantages_t.detach()).mean()
+
+            # Calculate Entropy loss
+            # Mean entropy * beta
+            entropy_loss = total_entropies[i] / len(agent_experiences[i]) * self.BETA
+
+            # Calculate the combined loss
+            combined_loss = policy_loss + value_loss - entropy_loss
+            losses.append(combined_loss)
+
+            # Add data
+            self.comb_losses[i].append(combined_loss.item())
+            self.value_losses[i].append(value_loss.item())
+            self.policy_losses[i].append(policy_loss.item())
+            self.entropy_losses[i].append(entropy_loss.item())
+
+        # Combine the loss from each agent
+        loss_t = torch.stack(losses).mean()
+        self.mean_comb_loss.append(loss_t.item())
+        return loss_t
+
+    def parallel_rollout(self, initial_states: torch.Tensor):
+        states = initial_states
+        early_term: list[bool] = [False] * self.NENVS
+
+        experiences: list[list[Experience]] = [[] for _ in range(self.NENVS)]
+        total_entropies: torch.Tensor = torch.tensor(
+            [0] * self.NENVS, dtype=torch.float, device=self.device
+        )
+
+        # Run Rollout
+        for t in range(self.TMAX):
+            actions, log_probs, entropies = self.choose_actions(states)
+            total_entropies += entropies
+
+            # Take actions
+            observations, rewards, terminateds, truncateds, _ = self.vec_env.step(
+                actions.numpy()
+            )
+            rewards = torch.tensor(rewards, device=self.device)
+
+            for i in range(self.NENVS):
+                if early_term[i]:
+                    continue
+                experiences[i].append(
+                    Experience(states[i], actions[i], log_probs[i], rewards[i])
+                )
+
+            early_term = [
+                et or term or trun
+                for et, term, trun in zip(early_term, terminateds, truncateds)
+            ]
+
+            self.episode_steps = [
+                self.episode_steps[i] + (0 if term else 1)
+                for i, term in enumerate(early_term)
+            ]
+
+            next_states = self.preprocess_state(observations)
+            states = next_states
+
+        with torch.no_grad():
+            _, final_values = self.network(states)
+        for i in range(self.NENVS):
+            if early_term[i]:
+                final_values[i] = 0
+
+        # Back propogate loss
+        losses = self.multiagent_loss(
+            final_values.squeeze(1), experiences, total_entropies
+        )
         self.optimizer.zero_grad()
-        loss.backward()
-        nn.utils.clip_grad_norm_(self.network.parameters(), self.CLIP_NORM)
+        losses.backward()
+        if self.env_type == ENVS.cartpole:
+            nn.utils.clip_grad_norm_(self.network.parameters(), self.CLIP_NORM)
         self.optimizer.step()
-        return None if early_terminate else state
+
+        return [None if early_term[i] else state for i, state in enumerate(states)]
 
     def train(self, max_rollouts: int):
-        obs, _ = self.environment.reset()
-        state = self.preprocess_state(obs)
+        obs, _ = self.vec_env.reset()
+        states = self.preprocess_state(obs)
+
         episodes = 0
 
-        for _ in range(max_rollouts):
-            next_state = self.train_nstep_rollout(state)
-            if next_state is None:
-                episodes += 1
-                # Find new state
-                obs, _ = self.environment.reset()
-                state = self.preprocess_state(obs)
-                # print(self.episode_steps)
-                self.episode_lengths.append(self.episode_steps)
-                self.episode_steps = 0
-                print(episodes)
+        for r in range(max_rollouts):
+            # Visualize every 25 rollouts
+            if r % 25 == 0:
+                self.visualize(
+                    "Mean Episode Length",
+                    [sum(m) / len(m) for m in zip(*self.episode_lengths)],
+                    1,
+                )
+                self.multi_visualize("Combination Loss", self.comb_losses, 2)
+                self.multi_visualize("Policy Loss", self.policy_losses, 3)
+                self.multi_visualize("Value Loss", self.value_losses, 4)
+                self.multi_visualize("Entropy Loss", self.entropy_losses, 5)
+                self.multi_visualize("Final Rewards", self.final_rewards, 6)
+                self.visualize("Mean Combination Loss", self.mean_comb_loss, 8)
+            final_states = self.parallel_rollout(states)
+            terminated_mask = [
+                True if state is None else False for state in final_states
+            ]
+            for i, term in enumerate(terminated_mask):
+                if term:
+                    self.episode_lengths[i].append(self.episode_steps[i])
+                    self.episode_steps[i] = 0
+
+            episodes += sum(terminated_mask)
+            if any(terminated_mask):
+                reset_states, _ = self.vec_env.reset(
+                    options={"reset_mask": np.array(terminated_mask)}
+                )
+                states = self.preprocess_state(reset_states)
             else:
-                state = next_state
+                states = torch.stack(final_states)  # type: ignore
+
+    def multi_visualize(self, title: str, data: list, figure: int):
+        plt.figure(figure)
+        plt.clf()
+        plt.title(title)
+
+        plt.xlabel("Rollouts")
+        plt.ylabel("Reward")
+        for reward in data:
+            reward = torch.tensor(reward, dtype=torch.float)
+            plt.plot(reward.numpy())
+
+            # Plot 100 episode averages
+            if len(reward) > 100:
+                means = reward.unfold(0, 100, 1).mean(1).view(-1)
+                means = torch.cat((torch.zeros(99), means))
+                plt.plot(means.numpy())
+                # if True:
+                # plt.title(f"{title}, best 100 avg: {means.numpy().max()}")
+
+        if plt.isinteractive():
+            plt.pause(0.001)
 
     def visualize(self, title: str, data: list, figure: int):
         plt.figure(figure)
         rewards_t = torch.tensor(data, dtype=torch.float)
         plt.clf()
-        if True:
-            plt.title("Finished")
-        else:
-            plt.title("Training...")
+        plt.title(title)
 
         plt.xlabel("Episodes")
         plt.ylabel("Reward")
