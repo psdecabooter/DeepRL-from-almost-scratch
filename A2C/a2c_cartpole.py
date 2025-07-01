@@ -77,11 +77,6 @@ def main():
     plt.ion()
     a2c.train(ROLLOUTS)
     plt.ioff()
-    # a2c.multi_visualize("Episode Length", a2c.episode_lengths, 1)
-    # a2c.multi_visualize("Combination Loss", a2c.comb_losses, 2)
-    # a2c.multi_visualize("Policy Loss", a2c.policy_losses, 3)
-    # a2c.multi_visualize("Value Loss", a2c.value_losses, 4)
-    # a2c.multi_visualize("Entropy Loss", a2c.entropy_losses, 5)
 
     env = gym.make("CartPole-v1")
     rewards = []
@@ -112,7 +107,7 @@ def main():
                 break
 
         rewards.append(episode_reward)
-    a2c.visualize("Trained Policy 1k Test", rewards, 6)
+    a2c.visualize("Trained Policy 1k Test", rewards, 100)
     plt.show()
 
 

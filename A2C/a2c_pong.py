@@ -3,6 +3,7 @@ from itertools import count
 import os
 import random
 import time
+import ale_py.vector_env
 import gymnasium as gym
 from gymnasium.wrappers import FrameStackObservation, AtariPreprocessing
 from matplotlib import pyplot as plt
@@ -56,29 +57,33 @@ class PongArchitecture(nn.Module):
 
 def preprocess_state(frame: np.ndarray):
     # Take in a 210 x 160 pixel grayscale image
-    state = np.ndarray((4, 84, 84))
-    for i in range(len(frame)):
-        crop = frame[i][34:-16, 5:-4]
-        # print(type(frame))
-        state[i] = np.array(
-            cv2.resize(crop, (84, 84), interpolation=cv2.INTER_NEAREST),
-            dtype=np.uint8,
-        )
+    state = np.ndarray((4, 4, 84, 84))
+    for g in range(len(frame)):
+        for i in range(len(frame[g])):
+            crop = frame[g][i][13:-6, 3:-2]
+            # print(type(frame))
+            state[g][i] = np.array(
+                cv2.resize(crop, (84, 84), interpolation=cv2.INTER_NEAREST),
+                dtype=np.uint8,
+            )
     return state
 
 
 def main():
+    NENVS = 4
     print("back: ", plt.get_backend())
     gym.register_envs(ale_py)
-    env = gym.make("ALE/Pong-v5", obs_type="grayscale")
-    env = FrameStackObservation(env, stack_size=4)
+    # env = gym.make("ALE/Pong-v5", obs_type="grayscale")
+    # env = FrameStackObservation(env, stack_size=4)
+    env = ale_py.vector_env.AtariVectorEnv(game="pong", num_envs=NENVS)
     obs, _ = env.reset()
-    action_size = env.action_space.n  # type: ignore
+    action_size = env.single_action_space.n  # type: ignore
+    # action_size = env.action_space.n  # type: ignore
     # print(action_size)
 
     # print(obs)
     # print(obs.shape)
-    obs = preprocess_state(obs)
+    # obs = preprocess_state(obs)
     # print(obs)
     # print(obs.shape)
     # exit()
@@ -86,19 +91,20 @@ def main():
     # plt.ion()
     # plt.figure(figsize=(10, 5))
     # plt.gcf().set_facecolor("lightgreen")
-    # for i in range(100):
+    # for i in range(40):
     #     obs, _, _, _, _ = env.step(env.action_space.sample())  # type: ignore
     #     plt.subplot(1, 2, 1)
     #     plt.title("Raw Frame (RGB)")
-    #     plt.imshow(obs[0])
+    #     plt.imshow(obs[0][1])
     #     plt.axis("off")
     #     plt.subplot(1, 2, 2)
     #     plt.title("Processed Frame")
-    #     plt.imshow(preprocess_state(obs)[0])
+    #     plt.imshow(preprocess_state(obs)[0][1])
     #     plt.axis("off")
     #     if plt.isinteractive():
     #         plt.pause(0.001)
     # plt.ioff()
+    # exit()
 
     # if GPU is to be used
     device = torch.device(
@@ -115,10 +121,10 @@ def main():
     VALUE_COEFFICIENT = 0.5  # policy_loss + VAL_COEF * value_loss
     CLIP_NORM = 0.1  # Parameter clipping
     BETA = 0.01  # Controls how important entropy is
-    ROLLOUT_LENGTH = 10  # Length of rollouts
+    ROLLOUT_LENGTH = 5  # Length of rollouts
     ROLLOUTS = 250000  # Number of episodes
     NETSIZE = 256
-    SHARED_NETWORK = PongArchitecture(obs.shape, action_size, NETSIZE)
+    SHARED_NETWORK = PongArchitecture(obs[0].shape, action_size, NETSIZE)
     # A2C client
     a2c = A2C_algorithm(
         num_environments=4,
@@ -137,19 +143,19 @@ def main():
         preprocess_fn=preprocess_state,
     )
 
-    seed = 42
-    random.seed(seed)
-    torch.manual_seed(seed)
-    env.reset(seed=seed)
-    env.action_space.seed(seed)
-    env.observation_space.seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
+    # seed = 42
+    # random.seed(seed)
+    # torch.manual_seed(seed)
+    # env.reset(seed=seed)
+    # env.action_space.seed(seed)
+    # env.observation_space.seed(seed)
+    # if torch.cuda.is_available():
+    #     torch.cuda.manual_seed(seed)
 
     plt.ion()
     a2c.train(ROLLOUTS)
     plt.ioff()
-    a2c.multi_visualize("Episode Length", a2c.episode_lengths, 1)
+    a2c.multi_visualize("Episode Length", a2c.final_lengths, 1)
     a2c.multi_visualize("Combination Loss", a2c.comb_losses, 2)
     a2c.multi_visualize("Policy Loss", a2c.policy_losses, 3)
     a2c.multi_visualize("Value Loss", a2c.value_losses, 4)
@@ -185,7 +191,7 @@ def main():
                 break
 
         rewards.append(episode_reward)
-    a2c.multi_visualize("Trained Policy 1k Test", rewards, 7)
+    a2c.multi_visualize("Trained Policy 1k Test", rewards, 100)
     plt.show()
 
     env.close()

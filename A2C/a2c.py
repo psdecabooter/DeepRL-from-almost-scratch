@@ -62,6 +62,7 @@ class Experience(NamedTuple):
     log_probability: torch.Tensor
     reward: torch.Tensor
     value: torch.Tensor
+    done: bool
 
 
 class ENVS(Enum):
@@ -106,7 +107,8 @@ class A2C_algorithm:
 
         self.mean_comb_loss = []
         self.episode_steps = [0] * num_environments
-        self.episode_lengths: list[list[int]] = [[] for _ in range(num_environments)]
+        self.episode_rewards = [0.0] * num_environments
+        self.final_lengths: list[list[int]] = [[] for _ in range(num_environments)]
         self.final_rewards = [[] for _ in range(num_environments)]
         self.comb_losses = [[] for _ in range(num_environments)]
         self.policy_losses = [[] for _ in range(num_environments)]
@@ -151,15 +153,12 @@ class A2C_algorithm:
             real_rewards = []
             discounted_rewards = final_rewards[i]
             for experience in agent_experiences[i].__reversed__():
+                if experience.done:
+                    discounted_rewards = 0
                 discounted_rewards = experience.reward + self.GAMMA * discounted_rewards
                 real_rewards.insert(0, discounted_rewards)
             real_rewards_t = torch.tensor(real_rewards, device=self.device).unsqueeze(1)
 
-            states_t = torch.stack([exp.state for exp in agent_experiences[i]]).to(
-                device=self.device
-            )
-            # action_probs, state_values = self.network(states_t)
-            # action_dist = Categorical(probs=action_probs)
             state_values = torch.stack([exp.value for exp in agent_experiences[i]]).to(
                 device=self.device
             )
@@ -167,15 +166,6 @@ class A2C_algorithm:
 
             # Calculate Value loss
             value_loss = torch.pow(advantages_t, 2).mean() * self.VALUE_COEF
-
-            # Calculate Policy Loss
-            # actions_t = action_dist.sample()
-            # log_probs = action_dist.log_prob(actions_t)
-            # print("st", states_t.shape)
-            # print("ap", action_probs.shape)
-            # print("a", actions_t)
-            # print("lp", log_probs)
-            # exit()
 
             log_probs = (
                 torch.stack([exp.log_probability for exp in agent_experiences[i]])
@@ -192,7 +182,7 @@ class A2C_algorithm:
             combined_loss = policy_loss + value_loss - entropy_loss
             losses.append(combined_loss)
 
-            # Add data
+            # Add logging data
             self.comb_losses[i].append(combined_loss.item())
             self.value_losses[i].append(value_loss.item())
             self.policy_losses[i].append(policy_loss.item())
@@ -200,12 +190,13 @@ class A2C_algorithm:
 
         # Combine the loss from each agent
         loss_t = torch.stack(losses).mean()
+        # Add logging data
         self.mean_comb_loss.append(loss_t.item())
         return loss_t
 
     def parallel_rollout(self, initial_states: torch.Tensor):
         states = initial_states
-        early_term: list[bool] = [False] * self.NENVS
+        dones = np.array([False] * self.NENVS)
 
         experiences: list[list[Experience]] = [[] for _ in range(self.NENVS)]
         total_entropies: torch.Tensor = torch.tensor(
@@ -223,34 +214,36 @@ class A2C_algorithm:
                 actions.numpy()
             )
             rewards = torch.tensor(rewards, device=self.device)
+            # Calculate which
+            dones = np.logical_or(terminateds, truncateds)
 
             for i in range(self.NENVS):
-                if early_term[i]:
-                    continue
+                # Add logging data
+                self.episode_rewards[i] += rewards[i].item()
+                self.episode_steps[i] += 0 if dones[i] else 1
+                if terminateds[i] or truncateds[i]:
+                    self.final_rewards[i].append(self.episode_rewards[i])
+                    self.final_lengths[i].append(self.episode_steps[i])
+                    self.episode_rewards[i] = 0
+                    self.episode_steps[i] = 0
+                # Add experience to replay memory
                 experiences[i].append(
                     Experience(
-                        states[i], actions[i], log_probs[i], rewards[i], values[i]
+                        states[i],
+                        actions[i],
+                        log_probs[i],
+                        rewards[i],
+                        values[i],
+                        dones[i],
                     )
                 )
+            # Set next states
+            states = self.preprocess_state(observations)
 
-            early_term = [
-                et or term or trun
-                for et, term, trun in zip(early_term, terminateds, truncateds)
-            ]
-
-            self.episode_steps = [
-                self.episode_steps[i] + (0 if term else 1)
-                for i, term in enumerate(early_term)
-            ]
-
-            next_states = self.preprocess_state(observations)
-            states = next_states
-
+        # Mask final values with states which ended
         with torch.no_grad():
             _, final_values = self.network(states)
-        for i in range(self.NENVS):
-            if early_term[i]:
-                final_values[i] = 0
+        final_values[dones] = 0
 
         # Back propogate loss
         losses = self.multiagent_loss(
@@ -258,49 +251,35 @@ class A2C_algorithm:
         )
         self.optimizer.zero_grad()
         losses.backward()
-        # if self.env_type == ENVS.cartpole:
-        nn.utils.clip_grad_norm_(self.network.parameters(), self.CLIP_NORM)
+        if self.env_type == ENVS.cartpole:
+            nn.utils.clip_grad_norm_(self.network.parameters(), self.CLIP_NORM)
         self.optimizer.step()
 
-        return [None if early_term[i] else state for i, state in enumerate(states)]
+        return states
 
     def train(self, max_rollouts: int):
         obs, _ = self.vec_env.reset()
         states = self.preprocess_state(obs)
-
-        episodes = 0
 
         for r in range(max_rollouts):
             # Visualize every 25 rollouts
             if r % 25 == 0:
                 self.visualize(
                     "Mean Episode Length",
-                    [sum(m) / len(m) for m in zip(*self.episode_lengths)],
+                    [sum(m) / len(m) for m in zip(*self.final_lengths)],
                     1,
                 )
                 self.multi_visualize("Combination Loss", self.comb_losses, 2)
                 self.multi_visualize("Policy Loss", self.policy_losses, 3)
                 self.multi_visualize("Value Loss", self.value_losses, 4)
                 self.multi_visualize("Entropy Loss", self.entropy_losses, 5)
-                self.multi_visualize("Final Rewards", self.final_rewards, 6)
-                self.visualize("Mean Combination Loss", self.mean_comb_loss, 8)
-            final_states = self.parallel_rollout(states)
-            terminated_mask = [
-                True if state is None else False for state in final_states
-            ]
-            for i, term in enumerate(terminated_mask):
-                if term:
-                    self.episode_lengths[i].append(self.episode_steps[i])
-                    self.episode_steps[i] = 0
-
-            episodes += sum(terminated_mask)
-            if any(terminated_mask):
-                reset_states, _ = self.vec_env.reset(
-                    options={"reset_mask": np.array(terminated_mask)}
+                self.visualize(
+                    "Mean Cumulative Rewards",
+                    [sum(m) / len(m) for m in zip(*self.final_rewards)],
+                    6,
                 )
-                states = self.preprocess_state(reset_states)
-            else:
-                states = torch.stack(final_states)  # type: ignore
+                self.visualize("Mean Combination Loss", self.mean_comb_loss, 8)
+            states = self.parallel_rollout(states)
 
     def multi_visualize(self, title: str, data: list, figure: int):
         plt.figure(figure)
