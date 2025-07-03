@@ -1,6 +1,6 @@
 # Deep RL Networks
-As a part of my undergraduate research, I have been tasked with learning deep reinforcement learning.
-These are my implementations of common reinforcement learning algorithms using Pytorch and Gymnasium.
+In order to understand PyTorch and DeepRL on a deeper level, I decided to implement some algorithms from scratch using PyTorch.
+These are my implementations of the common reinforcement learning algorithms DQN, A2C, and PPO using Pytorch and Gymnasium.
 Feel free to use the code as a reference. My skill in pytorch increased by a lot with every algorithm, so the older the file, the more likely you are to find bad practices.
 
 # Resources
