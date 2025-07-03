@@ -1,5 +1,6 @@
 from importlib.metadata import distribution
 from typing import NamedTuple
+from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -78,6 +79,12 @@ class PPOClient(object):
         self.env = environments
         self.optimizer = optim.AdamW(self.network.parameters(), lr=learning_rate)
 
+        # Logging information
+        self.policy_losses = []
+        self.value_losses = []
+        self.combined_losses = []
+        self.cum_rewards = []
+
         # Ensure valid hyperparameters
         assert self.MINIBATCH_SIZE <= self.HORIZON * self.ACTORS
         assert self.HORIZON % self.MINIBATCH_SIZE == 0
@@ -104,6 +111,7 @@ class PPOClient(object):
     def rollout(self, starting_states: torch.Tensor):
         states = starting_states
         dones = np.array([False] * self.ACTORS)
+        cumulative_rewards = torch.zeros(self.ACTORS)
 
         # Hold Replay Memory
         # T x N x ...
@@ -117,16 +125,9 @@ class PPOClient(object):
                 actions.squeeze(-1).numpy()
             )
             rewards = torch.tensor(rewards, device=self.device).unsqueeze(1)
+            cumulative_rewards += rewards.squeeze(1)
             dones = np.logical_or(terminateds, truncateds)
 
-            # print("s", states.shape)
-            # print("a", actions.shape)
-            # print("lp", log_probs.shape)
-            # print("sv", state_values.shape)
-            # print("r", rewards.shape)
-            # print("ent", entropies.shape)
-            # print("dns", dones)
-            # exit()
             # Record experiences
             replay_experiences.append(
                 Experience(
@@ -141,6 +142,10 @@ class PPOClient(object):
             )
 
             states = next_states
+
+            # Record logging data
+            self.cum_rewards.extend(cumulative_rewards[dones])
+            cumulative_rewards[dones] = 0
 
         # Calculate final state-values
         with torch.no_grad():
@@ -170,19 +175,14 @@ class PPOClient(object):
 
         # Create batches
         advantages_t = torch.cat(advantages).to(device=self.device)
-        print("adv", advantages_t.shape)
         states_t = torch.cat([exp.states for exp in experiences]).to(device=self.device)
-        print("s", states_t.shape)
         actions_t = torch.cat([exp.actions for exp in experiences]).to(
             device=self.device
         )
-        print("a", actions_t.shape)
         log_probs_t = torch.cat([exp.log_probs for exp in experiences]).to(
             device=self.device
         )
-        print("lp", log_probs_t.shape)
         target_values_t = torch.cat(target_values).to(device=self.device)
-        print("tv:", target_values_t.shape)
 
         # Ensure that they are all the same size
         assert (
@@ -196,7 +196,6 @@ class PPOClient(object):
         # Go through batches of experiences in a random order
         order = np.arange(self.HORIZON * self.ACTORS)
         np.random.shuffle(order)
-        # print(logprobs_t[order.max()])
         for start in range(0, len(order), self.MINIBATCH_SIZE):
             end = min(len(order), start + self.MINIBATCH_SIZE)
             batch_indicies = order[start:end]
@@ -245,14 +244,46 @@ class PPOClient(object):
                 policy_loss + self.VCOEF * value_loss - self.ECOEF * entropy_loss
             )
 
-            print(combined_loss)
             self.optimizer.zero_grad()
             combined_loss.backward()
             nn.utils.clip_grad_norm_(self.network.parameters(), self.CLIP_NORM)
             self.optimizer.step()
 
+            # Add logging information
+            self.policy_losses.append(policy_loss)
+            self.value_losses.append(self.VCOEF * value_loss)
+            self.combined_losses.append(combined_loss)
+
     def train(self, iterations: int):
         states, _ = self.env.reset()
-        for _ in range(iterations):
+        for i in range(iterations):
             states, final_state_values, experiences = self.rollout(states)
             self.pp_optimize(experiences, final_state_values)
+
+            # Update graphs
+            if i % 1 == 0:
+                self.visualize("Cumulative Rewards", self.cum_rewards, 1)
+                self.visualize("Policy Losses", self.policy_losses, 2)
+                self.visualize("Value Losses", self.value_losses, 3)
+                self.visualize("Combined Losses", self.combined_losses, 4)
+
+    def visualize(self, title: str, data: list, figure: int):
+        plt.figure(figure)
+        rewards_t = torch.tensor(data, dtype=torch.float)
+        plt.clf()
+        plt.title(title)
+
+        plt.xlabel("Episodes")
+        plt.ylabel("Reward")
+        plt.plot(rewards_t.numpy())
+
+        # Plot 100 episode averages
+        if len(rewards_t) > 100:
+            means = rewards_t.unfold(0, 100, 1).mean(1).view(-1)
+            means = torch.cat((torch.zeros(99), means))
+            plt.plot(means.numpy())
+            if True:
+                plt.title(f"{title}, best 100 avg: {means.numpy().max()}")
+
+        if plt.isinteractive():
+            plt.pause(0.001)

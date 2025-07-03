@@ -1,5 +1,7 @@
+from itertools import count
 import gymnasium as gym
 from gymnasium.vector import VectorObservationWrapper
+from matplotlib import pyplot as plt
 import torch
 import torch.nn as nn
 import numpy as np
@@ -39,7 +41,7 @@ class FrozenNetwork(nn.Module):
 def main():
     # HYPER PARAMETERS
     LEARNING_RATE = 2e-4
-    ITERATIONS = 200_000
+    ITERATIONS = 200
     HORIZON = 2048
     BATCH_SIZE = 64
     EPOCHS = 10
@@ -48,7 +50,7 @@ def main():
     CLIP_NORM = 0.5
     VALUE_COEFFICIENT = 0.5
     ENTROPY_COEFFICIENT = 0.01
-    NUM_ENVS = 4
+    NUM_ENVS = 6
     NETSIZE = 128
 
     # Environment
@@ -88,7 +90,49 @@ def main():
         device=device,
     )
 
+    plt.ion()
     ppo.train(ITERATIONS)
+    plt.ioff()
+
+    # Test trained model
+    env = gym.make("FrozenLake-v1")
+    final_rewards = []
+    for e in range(500):
+        start_state, _ = env.reset()
+        state = torch.zeros(observation_size)
+        state[start_state] = 1
+        for i in count():
+            with torch.no_grad():
+                action_probs, state_values = ppo.network(state)
+                action = torch.argmax(action_probs).item()
+            next_state, reward, term, trun, _ = env.step(action)
+            state = torch.zeros(observation_size)
+            state[next_state] = 1
+            if term or trun:
+                final_rewards.append(reward)
+                break
+
+    ppo.visualize("Trained Final Rewards", final_rewards, 0)
+    plt.show()
+
+    # Visualize model on loop
+    env = gym.make("FrozenLake-v1", render_mode="human")
+    for _ in count():
+        start_state, _ = env.reset()
+        state = torch.zeros(observation_size)
+        state[start_state] = 1
+        for i in count():
+            with torch.no_grad():
+                action_probs, state_values = ppo.network(state)
+                action = torch.argmax(action_probs).item()
+            next_state, reward, term, trun, _ = env.step(action)
+            state = torch.zeros(observation_size)
+            state[next_state] = 1
+            if term or trun:
+                break
+
+    env.close()
+    envs.close()
 
 
 if __name__ == "__main__":
