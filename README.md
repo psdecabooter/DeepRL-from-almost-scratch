@@ -8,7 +8,7 @@ Feel free to use the code as a reference. My skill in pytorch increased by a lot
 [DQN Paper 2](https://www.nature.com/articles/nature14236)<br>
 [DQN Guide](https://docs.pytorch.org/tutorials/intermediate/reinforcement_q_learning.html)<br>
 [A2C/A3C Paper](https://arxiv.org/pdf/1602.01783)<br>
-[Hugging Face A2C](https://huggingface.co/learn/deep-rl-course/unitbonus2/hands-on)<br>
+[Hugging Face A2C](https://huggingface.co/learn/deep-rl-course/unit6/introduction)<br>
 [PPO Paper](https://arxiv.org/abs/1707.06347)<br>
 [Hugging Face PPO](https://huggingface.co/learn/deep-rl-course/unit8/introduction)<br>
 [PPO Implementation Details](https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/)<br>
