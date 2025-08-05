@@ -3,6 +3,9 @@ In order to understand PyTorch and DeepRL on a deeper level, I decided to implem
 These are my implementations of the common reinforcement learning algorithms DQN, A2C, and PPO using Pytorch and Gymnasium.
 Feel free to use the code as a reference. My skill in pytorch increased by a lot with every algorithm, so the older the file, the more likely you are to find bad practices.
 
+## Check out this presentation I made!
+I made a presentation about the material to help me digest it. If you find any problems please reach out! [Intro to DeepRL](https://docs.google.com/presentation/d/1HI09yHT6GMWicopRVa7jXSa4GRL5Z3_S5e4eAdUN9l0/edit?usp=sharing)
+
 # Resources
 [DQN Paper](https://arxiv.org/abs/1312.5602)<br>
 [DQN Paper 2](https://www.nature.com/articles/nature14236)<br>
